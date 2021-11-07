@@ -95,6 +95,9 @@ import (
 	// unnamed import of statik for swagger UI support
 	_ "github.com/tharsis/ethermint/client/docs/statik"
 
+	aguaclaramodule "github.com/Electronic-Signatures-Industries/ancon-protocol/x/aguaclara"
+	aguaclaramodulekeeper "github.com/Electronic-Signatures-Industries/ancon-protocol/x/aguaclara/keeper"
+	aguaclaramoduletypes "github.com/Electronic-Signatures-Industries/ancon-protocol/x/aguaclara/types"
 	"github.com/tharsis/ethermint/app/ante"
 	srvflags "github.com/tharsis/ethermint/server/flags"
 	ethermint "github.com/tharsis/ethermint/types"
@@ -105,6 +108,12 @@ import (
 	"github.com/tharsis/ethermint/x/feemarket"
 	feemarketkeeper "github.com/tharsis/ethermint/x/feemarket/keeper"
 	feemarkettypes "github.com/tharsis/ethermint/x/feemarket/types"
+
+	// this line is used by starport scaffolding # stargate/app/moduleImport
+	"github.com/Electronic-Signatures-Industries/ancon-protocol/x/anconprotocol"
+	_ "github.com/Electronic-Signatures-Industries/ancon-protocol/x/anconprotocol/keeper"
+	anconprotocolkeeper "github.com/Electronic-Signatures-Industries/ancon-protocol/x/anconprotocol/keeper"
+	anconprotocoltypes "github.com/Electronic-Signatures-Industries/ancon-protocol/x/anconprotocol/types"
 )
 
 func init() {
@@ -150,6 +159,8 @@ var (
 		vesting.AppModuleBasic{},
 		evm.AppModuleBasic{},
 		feemarket.AppModuleBasic{},
+		anconprotocol.AppModuleBasic{},
+		aguaclaramodule.AppModuleBasic{},
 	)
 
 	// module account permissions
@@ -214,6 +225,8 @@ type Evmos struct {
 	ScopedIBCKeeper      capabilitykeeper.ScopedKeeper
 	ScopedTransferKeeper capabilitykeeper.ScopedKeeper
 
+	ScopedAguaclaraKeeper capabilitykeeper.ScopedKeeper
+	AguaclaraKeeper       aguaclaramodulekeeper.Keeper
 	// Ethermint keepers
 	EvmKeeper       *evmkeeper.Keeper
 	FeeMarketKeeper feemarketkeeper.Keeper
@@ -226,6 +239,11 @@ type Evmos struct {
 
 	// the configurator
 	configurator module.Configurator
+
+	AnconprotocolKeeper anconprotocolkeeper.Keeper
+
+	cms sdk.CommitMultiStore // Main (uncached) state
+
 }
 
 // NewEvmos returns a reference to a new initialized Ethermint application.
@@ -256,6 +274,7 @@ func NewEvmos(
 	bApp.SetCommitMultiStoreTracer(traceStore)
 	bApp.SetVersion(version.Version)
 	bApp.SetInterfaceRegistry(interfaceRegistry)
+	iavlStoreKey := sdk.NewKVStoreKey(anconprotocoltypes.StoreKey)
 
 	keys := sdk.NewKVStoreKeys(
 		// SDK keys
@@ -268,6 +287,7 @@ func NewEvmos(
 		ibchost.StoreKey, ibctransfertypes.StoreKey,
 		// ethermint keys
 		evmtypes.StoreKey, feemarkettypes.StoreKey,
+		aguaclaramoduletypes.StoreKey,
 	)
 
 	// Add the EVM transient store key
@@ -295,6 +315,7 @@ func NewEvmos(
 
 	scopedIBCKeeper := app.CapabilityKeeper.ScopeToModule(ibchost.ModuleName)
 	scopedTransferKeeper := app.CapabilityKeeper.ScopeToModule(ibctransfertypes.ModuleName)
+	scopedAguaclaraKeeper := app.CapabilityKeeper.ScopeToModule(aguaclaramoduletypes.ModuleName)
 
 	// Applications that wish to enforce statically created ScopedKeepers should call `Seal` after creating
 	// their scoped modules in `NewApp` with `ScopeToModule`
@@ -348,11 +369,35 @@ func NewEvmos(
 		app.AccountKeeper, app.BankKeeper, app.StakingKeeper, app.FeeMarketKeeper,
 		tracer, bApp.Trace(), // debug EVM based on Baseapp options
 	)
+	app.AnconprotocolKeeper = anconprotocolkeeper.NewKeeper(
+		appCodec,
+		//keys[anconprotocoltypes.StoreKey],
+		iavlStoreKey,
+		keys[anconprotocoltypes.MemStoreKey],
+		app.GetSubspace(anconprotocoltypes.ModuleName),
+		app.AccountKeeper,
+		app.BankKeeper,
+		app.EvmKeeper,
+		app.AguaclaraKeeper,
+		app.ModuleAccountAddrs(),
+		app.cms,
+	)
+	anconprotocolModule := anconprotocol.NewAppModule(appCodec, app.AnconprotocolKeeper, app.AccountKeeper, app.BankKeeper)
 
 	// Create IBC Keeper
 	app.IBCKeeper = ibckeeper.NewKeeper(
 		appCodec, keys[ibchost.StoreKey], app.GetSubspace(ibchost.ModuleName), app.StakingKeeper, app.UpgradeKeeper, scopedIBCKeeper,
 	)
+	app.ScopedAguaclaraKeeper = scopedAguaclaraKeeper
+	app.AguaclaraKeeper = *aguaclaramodulekeeper.NewKeeper(
+		appCodec,
+		keys[aguaclaramoduletypes.StoreKey],
+		keys[aguaclaramoduletypes.MemStoreKey],
+		app.IBCKeeper.ChannelKeeper,
+		&app.IBCKeeper.PortKeeper,
+		scopedAguaclaraKeeper,
+	)
+	aguaclaraModule := aguaclaramodule.NewAppModule(appCodec, app.AguaclaraKeeper)
 
 	// register the proposal types
 	govRouter := govtypes.NewRouter()
@@ -384,6 +429,8 @@ func NewEvmos(
 	// Create static IBC router, add transfer route, then set and seal it
 	ibcRouter := porttypes.NewRouter()
 	ibcRouter.AddRoute(ibctransfertypes.ModuleName, transferModule)
+	ibcRouter.AddRoute(aguaclaramoduletypes.ModuleName, aguaclaraModule)
+
 	app.IBCKeeper.SetRouter(ibcRouter)
 
 	// create evidence keeper with router
@@ -429,6 +476,8 @@ func NewEvmos(
 		// Ethermint app modules
 		evm.NewAppModule(app.EvmKeeper, app.AccountKeeper),
 		feemarket.NewAppModule(app.FeeMarketKeeper),
+		anconprotocolModule,
+		aguaclaraModule,
 	)
 
 	// During begin block slashing happens after distr.BeginBlocker so that
@@ -464,6 +513,8 @@ func NewEvmos(
 		authz.ModuleName, feegrant.ModuleName,
 		// Ethermint modules
 		evmtypes.ModuleName, feemarkettypes.ModuleName,
+		anconprotocoltypes.ModuleName,
+		aguaclaramoduletypes.ModuleName,
 
 		// NOTE: crisis module must go at the end to check for invariants on each module
 		crisistypes.ModuleName,
@@ -506,6 +557,7 @@ func NewEvmos(
 	app.MountKVStores(keys)
 	app.MountTransientStores(tkeys)
 	app.MountMemoryStores(memKeys)
+	app.MountStore(iavlStoreKey, sdk.StoreTypeIAVL)
 
 	// initialize BaseApp
 	app.SetInitChainer(app.InitChainer)

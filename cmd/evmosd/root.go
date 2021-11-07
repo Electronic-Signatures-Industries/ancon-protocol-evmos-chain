@@ -16,6 +16,7 @@ import (
 	"github.com/tendermint/tendermint/libs/log"
 	dbm "github.com/tendermint/tm-db"
 
+	ethermintserver "github.com/Electronic-Signatures-Industries/ancon-protocol/server"
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/config"
@@ -34,7 +35,7 @@ import (
 	"github.com/tharsis/ethermint/client/debug"
 	"github.com/tharsis/ethermint/crypto/hd"
 	"github.com/tharsis/ethermint/encoding"
-	ethermintserver "github.com/tharsis/ethermint/server"
+
 	servercfg "github.com/tharsis/ethermint/server/config"
 	srvflags "github.com/tharsis/ethermint/server/flags"
 	ethermint "github.com/tharsis/ethermint/types"
